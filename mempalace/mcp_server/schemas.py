@@ -666,6 +666,13 @@ TOOLS = {
                         "Ignored by other modes."
                     ),
                 },
+                "room": {
+                    "type": "string",
+                    "description": (
+                        "Target room for projects mode; overrides per-file room routing "
+                        "(folder/filename/content). Rejected for other modes."
+                    ),
+                },
             },
             "required": ["source"],
         },
