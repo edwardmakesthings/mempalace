@@ -12,6 +12,7 @@ from mempalace import mcp_server, service, tool_capabilities
 
 READ_ONLY_REFUSED = {
     "mempalace_add_drawer",
+    "mempalace_add_drawers",
     "mempalace_artifact_put",
     "mempalace_checkpoint",
     "mempalace_create_tunnel",
