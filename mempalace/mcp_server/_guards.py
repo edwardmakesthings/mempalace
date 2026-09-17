@@ -227,6 +227,7 @@ _MUTATING_TOOLS = frozenset(
         "mempalace_delete_tunnel",
         "mempalace_delete_hallway",
         "mempalace_add_drawer",
+        "mempalace_add_drawers",
         "mempalace_delete_drawer",
         "mempalace_delete_drawers",
         "mempalace_checkpoint",
@@ -290,6 +291,7 @@ _PEER_WRITER_EXEMPT_TOOLS = frozenset(
 _VECTOR_WRITE_TOOLS = frozenset(
     {
         "mempalace_add_drawer",
+        "mempalace_add_drawers",
         "mempalace_update_drawer",
         "mempalace_delete_drawer",
         "mempalace_delete_drawers",
