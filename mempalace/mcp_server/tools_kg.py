@@ -171,6 +171,55 @@ def tool_kg_query(
     return payload
 
 
+def tool_kg_query_many(
+    entities: list = None,
+    as_of: str = None,
+    direction: str = "both",
+    predicate: str = None,
+    recurse: bool = False,
+    max_depth: int = 20,
+):
+    """Query the knowledge graph for several entities in one call.
+
+    The bulk counterpart to ``kg_query``, for a caller holding a list of
+    entities: one tool call and one result object instead of N, which matters
+    because each call otherwise renders as its own card and its own log line.
+
+    Each entity is queried independently, so an entity reachable from another is
+    still reported under both — sharing one traversal would silently drop facts
+    from the second entity's result. The KG handle is cached, so the per-entity
+    cost is the query itself rather than a reopen.
+
+    An entity that cannot be queried is reported under ``errors`` and the rest
+    still return, so one bad name does not cost the whole batch.
+    """
+    if not entities:
+        return {"error": "entities must be a non-empty list of entity names"}
+
+    results = {}
+    errors = {}
+    for entity in entities:
+        payload = tool_kg_query(
+            entity=entity,
+            as_of=as_of,
+            direction=direction,
+            predicate=predicate,
+            recurse=recurse,
+            max_depth=max_depth,
+        )
+        if isinstance(payload, dict) and "error" in payload:
+            errors[str(entity)] = payload["error"]
+        else:
+            results[str(entity)] = payload
+
+    return {
+        "success": True,
+        "count": len(results),
+        "results": results,
+        "errors": errors,
+    }
+
+
 def tool_kg_add(
     subject: str,
     predicate: str,

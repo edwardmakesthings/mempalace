@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import json
 import sys
 
 
@@ -755,8 +756,61 @@ class TestKGTools:
             metadatas=[metadata],
         )
 
+    # ── Diary Tools ─────────────────────────────────────────────────────────
 
-# ── Diary Tools ─────────────────────────────────────────────────────────
+    def test_kg_query_many_returns_each_entity(self, monkeypatch, config, palace_path, seeded_kg):
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
+        from mempalace.mcp_server import tool_kg_query_many
+
+        result = tool_kg_query_many(entities=["Max", "Max"])
+
+        assert result["success"] is True
+        # Results are keyed by entity, so a repeated name collapses.
+        assert result["count"] == 1
+        assert result["errors"] == {}
+        assert result["results"]["Max"]["count"] > 0
+
+    def test_kg_query_many_reports_bad_names_without_failing(
+        self, monkeypatch, config, palace_path, seeded_kg
+    ):
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
+        from mempalace.mcp_server import tool_kg_query_many
+
+        result = tool_kg_query_many(entities=["Max", ""])
+
+        assert result["count"] == 1
+        assert "" in result["errors"]
+        assert "Max" in result["results"]
+
+    def test_kg_query_many_rejects_an_empty_list(self, monkeypatch, config, palace_path, kg):
+        _patch_mcp_server(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_kg_query_many
+
+        assert "error" in tool_kg_query_many(entities=[])
+
+    def test_kg_query_many_registered_and_dispatchable(
+        self, monkeypatch, config, palace_path, seeded_kg
+    ):
+        _patch_mcp_server(monkeypatch, config, seeded_kg)
+        from mempalace.mcp_server import handle_request
+
+        listed = handle_request({"method": "tools/list", "id": 1, "params": {}})
+        names = {t["name"] for t in listed["result"]["tools"]}
+        assert "mempalace_kg_query_many" in names
+
+        resp = handle_request(
+            {
+                "method": "tools/call",
+                "id": 2,
+                "params": {
+                    "name": "mempalace_kg_query_many",
+                    "arguments": {"entities": ["Max"]},
+                },
+            }
+        )
+        content = json.loads(resp["result"]["content"][0]["text"])
+        assert content["success"] is True
+        assert "Max" in content["results"]
 
 
 class TestKGLazyCache:

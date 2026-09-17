@@ -1876,4 +1876,75 @@ class TestAddDrawers:
         assert "mempalace_add_drawers" in names
 
 
+class TestGetDrawers:
+    """tool_get_drawers — bulk fetch by id."""
+
+    def _patch(self, monkeypatch, config, kg):
+        _patch_mcp_server(monkeypatch, config, kg)
+
+    def test_fetches_several_drawers_in_one_call(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_get_drawers, tool_list_drawers
+
+        tool_add_drawers(
+            items=[
+                {"wing": "w", "room": "r", "content": "alpha"},
+                {"wing": "w", "room": "r", "content": "beta"},
+            ]
+        )
+        ids = [d["drawer_id"] for d in tool_list_drawers(wing="w", room="r")["drawers"]]
+
+        result = tool_get_drawers(drawer_ids=ids)
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        assert result["not_found"] == []
+        assert {d["drawer_id"] for d in result["drawers"]} == set(ids)
+
+    def test_reports_missing_ids_without_failing_the_batch(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_get_drawers, tool_list_drawers
+
+        tool_add_drawers(items=[{"wing": "w", "room": "r", "content": "alpha"}])
+        good = tool_list_drawers(wing="w", room="r")["drawers"][0]["drawer_id"]
+
+        result = tool_get_drawers(drawer_ids=[good, "does-not-exist"])
+
+        assert result["count"] == 1
+        assert result["not_found"] == ["does-not-exist"]
+
+    def test_rejects_an_empty_id_list(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_get_drawers
+
+        assert "error" in tool_get_drawers(drawer_ids=[])
+
+    def test_registered_and_dispatchable(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import handle_request, tool_add_drawers
+
+        # Seed a palace so the dispatched call has a collection to open.
+        tool_add_drawers(items=[{"wing": "w", "room": "r", "content": "alpha"}])
+
+        listed = handle_request({"method": "tools/list", "id": 1, "params": {}})
+        names = {t["name"] for t in listed["result"]["tools"]}
+        assert "mempalace_get_drawers" in names
+
+        resp = handle_request(
+            {
+                "method": "tools/call",
+                "id": 2,
+                "params": {
+                    "name": "mempalace_get_drawers",
+                    "arguments": {"drawer_ids": ["does-not-exist"]},
+                },
+            }
+        )
+        content = json.loads(resp["result"]["content"][0]["text"])
+        assert content["success"] is True
+        assert content["count"] == 0
+
+
 # ── KG Tools ────────────────────────────────────────────────────────────

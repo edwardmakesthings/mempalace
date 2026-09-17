@@ -1649,6 +1649,49 @@ def tool_get_drawer(drawer_id: str):
         return {"error": str(e)}
 
 
+def tool_get_drawers(drawer_ids: list = None):
+    """Fetch several logical drawers by ID in one call.
+
+    The bulk counterpart to ``get_drawer``. Each id resolves through the same
+    logical path, so a parent id returns its assembled drawer rather than a
+    single chunk.
+
+    An id that resolves to nothing is reported under ``not_found`` instead of
+    aborting, so one stale id in a list of fifty does not cost the other
+    forty-nine. An id that raises is reported under ``errors`` for the same
+    reason.
+    """
+    if not drawer_ids:
+        return {"error": "drawer_ids must be a non-empty list of drawer ids"}
+
+    col = _get_collection()
+    if not col:
+        return _collection_error_or_no_palace()
+
+    drawers = []
+    not_found = []
+    errors = {}
+    for drawer_id in drawer_ids:
+        try:
+            record = _logical_drawer_record(col, drawer_id)
+        except Exception as e:
+            errors[str(drawer_id)] = str(e)
+            continue
+        if record is None:
+            not_found.append(drawer_id)
+            continue
+        _touch_record_read(col, record)
+        drawers.append(_drawer_payload(record))
+
+    return {
+        "success": True,
+        "count": len(drawers),
+        "drawers": drawers,
+        "not_found": not_found,
+        "errors": errors,
+    }
+
+
 def tool_list_drawers(
     wing: str = None,
     room: str = None,

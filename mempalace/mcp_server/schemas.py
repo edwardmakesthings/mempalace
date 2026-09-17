@@ -70,6 +70,41 @@ TOOLS = {
         },
         "handler": tool_kg_query,
     },
+    "mempalace_kg_query_many": {
+        "description": "Query the knowledge graph for several entities in one call. Same filters as kg_query; results are keyed by entity, with unusable names reported under errors rather than failing the batch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entities to query (e.g. ['Max', 'MyProject'])",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "Date/datetime filter — only facts valid at this time (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ, optional)",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "outgoing (entity→?), incoming (?→entity), or both (default: both)",
+                },
+                "predicate": {
+                    "type": "string",
+                    "description": "Optional predicate filter (e.g. 'synthesized-from', 'merged-into').",
+                },
+                "recurse": {
+                    "type": "boolean",
+                    "description": "When true, breadth-first traversal continues beyond one hop (default: false).",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum traversal depth when recurse=true (default 20).",
+                },
+            },
+            "required": ["entities"],
+        },
+        "handler": tool_kg_query_many,
+    },
     "mempalace_kg_add": {
         "description": "Add a fact to the knowledge graph. Subject → predicate → object with optional time window. E.g. ('Max', 'started_school', 'Year 7', valid_from='2026-09-01'). Pass valid_to to backfill an already-ended historical fact in a single call.",
         "input_schema": {
@@ -776,6 +811,21 @@ TOOLS = {
             "required": ["drawer_id"],
         },
         "handler": tool_get_drawer,
+    },
+    "mempalace_get_drawers": {
+        "description": "Fetch several drawers by ID in one call — full content and metadata for each. Ids that resolve to nothing are reported in not_found rather than failing the batch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "drawer_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "IDs of the drawers to fetch",
+                },
+            },
+            "required": ["drawer_ids"],
+        },
+        "handler": tool_get_drawers,
     },
     "mempalace_list_drawers": {
         "description": "List drawers with pagination. Optional wing/room filter and since/before date filter on filed_at (since inclusive, before exclusive; drawers without a parseable filed_at are excluded when a date bound is set). Returns IDs, wings, rooms, content previews, and total matching count for pagination.",
