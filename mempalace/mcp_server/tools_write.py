@@ -1185,14 +1185,16 @@ def tool_delete_drawers(
 
     try:
         if explicit:
-            physical_ids, metas, not_found = _bulk_explicit_rows(col, explicit)
+            ids, metas, not_found = _bulk_explicit_rows(col, explicit)
+            physical_ids = ids
         else:
             physical_ids, not_found = None, []
-            metas = _fetch_all_metadata(col, where=where)
+            ids, _documents, metas = _fetch_drawer_rows(col, where=where, include=["metadatas"])
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-    match_count = len(metas)
+    count = count_drawer_rows(ids, [], metas)
+    match_count = count.drawers
     sample = _bulk_scope_sample(metas)
     source_files = sorted({str(_safe_meta(meta).get("source_file") or "") for meta in metas} - {""})
 
@@ -1203,6 +1205,8 @@ def tool_delete_drawers(
             "scope": _bulk_scope_echo(where, drawer_ids),
             **_bulk_not_found_field(not_found),
             "match_count": match_count,
+            "match_chunks": count.chunks,
+            "match_rows": count.rows,
             "sample": sample,
             "hint": (
                 "No drawers were deleted. Re-run with dry_run=false to remove these "
@@ -1252,6 +1256,8 @@ def tool_delete_drawers(
             "scope": _bulk_scope_echo(where, drawer_ids),
             **_bulk_not_found_field(not_found),
             "deleted": match_count,
+            "deleted_chunks": count.chunks,
+            "deleted_rows": count.rows,
             "closets_deleted": closets_deleted,
         }
     except Exception as e:
@@ -1323,7 +1329,8 @@ def tool_move_drawers(
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-    match_count = len(ids)
+    count = count_drawer_rows(ids, [], metas)
+    match_count = count.drawers
     sample = _bulk_scope_sample(metas)
 
     if dry_run:
@@ -1333,6 +1340,8 @@ def tool_move_drawers(
             "scope": _bulk_scope_echo(where, drawer_ids),
             **_bulk_not_found_field(not_found),
             "match_count": match_count,
+            "match_chunks": count.chunks,
+            "match_rows": count.rows,
             "sample": sample,
             "target_wing": target_wing,
             "target_room": target_room,
@@ -1368,9 +1377,15 @@ def tool_move_drawers(
         now = datetime.now().isoformat()
         updated_ids = []
         updated_metas = []
-        unchanged = 0
+        # Counted per logical drawer, not per row: a chunked drawer moves as one
+        # unit even though it is stored as several rows, so a row tally would
+        # overstate what the caller asked for.
+        unchanged_logical = set()
+        moved_logical = set()
         for physical_id, meta in zip(ids, metas):
-            new_meta = dict(_safe_meta(meta))
+            safe_meta = _safe_meta(meta)
+            logical_id = _logical_parent_id(safe_meta) or physical_id
+            new_meta = dict(safe_meta)
             changed = False
             if (
                 target_wing is not None
@@ -1385,9 +1400,10 @@ def tool_move_drawers(
                 new_meta["room"] = target_room
                 changed = True
             if not changed:
-                unchanged += 1
+                unchanged_logical.add(logical_id)
                 continue
             new_meta["last_modified"] = now
+            moved_logical.add(logical_id)
             updated_ids.append(physical_id)
             updated_metas.append(new_meta)
 
@@ -1397,14 +1413,17 @@ def tool_move_drawers(
 
         _invalidate_overview_caches()
 
-        logger.info("Moved %d drawer(s) (%d already at target)", len(updated_ids), unchanged)
+        logger.info(
+            "Moved %d drawer(s) (%d already at target)", len(moved_logical), len(unchanged_logical)
+        )
         return {
             "success": True,
             "dry_run": False,
             "scope": _bulk_scope_echo(where, drawer_ids),
             **_bulk_not_found_field(not_found),
-            "moved": len(updated_ids),
-            "unchanged": unchanged,
+            "moved": len(moved_logical),
+            "unchanged": len(unchanged_logical),
+            "moved_rows": len(updated_ids),
             "target_wing": target_wing,
             "target_room": target_room,
         }
