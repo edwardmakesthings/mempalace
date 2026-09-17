@@ -492,6 +492,35 @@ TOOLS = {
         },
         "handler": tool_add_drawer,
     },
+    "mempalace_add_drawers": {
+        "description": "File many drawers in one call, with full metadata control. Use instead of looping add_drawer: one idempotency probe and batched upserts rather than a round trip per drawer, each contending for the palace lock.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "Items to file. Each is {wing, room, content} plus optional source_file and metadata.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "wing": {"type": "string"},
+                            "room": {"type": "string"},
+                            "content": {"type": "string"},
+                            "source_file": {"type": "string"},
+                            "metadata": {"type": "object"},
+                        },
+                        "required": ["wing", "room", "content"],
+                    },
+                },
+                "added_by": {
+                    "type": "string",
+                    "description": "Who is filing these (default: mcp)",
+                },
+            },
+            "required": ["items"],
+        },
+        "handler": tool_add_drawers,
+    },
     "mempalace_checkpoint": {
         "description": "Save a whole session in one call: semantic-dedups each item, files non-duplicates as drawers, then writes one diary entry. Use this instead of many separate check_duplicate/add_drawer/diary_write calls — it renders as a single tool-call card in the host UI.",
         "input_schema": {

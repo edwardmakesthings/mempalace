@@ -1774,4 +1774,106 @@ class TestMoveDrawers:
         assert content["match_count"] == 2
 
 
+class TestAddDrawers:
+    """tool_add_drawers — bulk filing with full metadata control."""
+
+    def _patch(self, monkeypatch, config, kg):
+        _patch_mcp_server(monkeypatch, config, kg)
+
+    def test_bulk_files_every_item_and_chunks_oversized_content(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        # Comfortably above any default chunk_size, so this item must chunk.
+        oversized = "x" * 2500
+        result = tool_add_drawers(
+            items=[
+                {"wing": "w", "room": "r", "content": "alpha", "source_file": "s.md"},
+                {"wing": "w", "room": "r", "content": "beta", "metadata": {"custom": "yes"}},
+                {"wing": "w", "room": "r", "content": oversized},
+            ]
+        )
+
+        assert result["success"] is True
+        assert result["added"] == 3
+        assert result["failed"] == 0
+        # The two small items take one row each; the oversized one spans several.
+        assert result["rows_written"] >= 4
+        # Three logical drawers, however many rows they occupy.
+        assert tool_list_drawers(wing="w", room="r")["total"] == 3
+
+    def test_bulk_carries_source_file_and_extra_metadata(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        tool_add_drawers(
+            items=[
+                {"wing": "w", "room": "r", "content": "alpha", "source_file": "s.md"},
+                {"wing": "w", "room": "r", "content": "beta", "metadata": {"custom": "yes"}},
+            ]
+        )
+
+        listed = {
+            row["drawer_id"]: row["metadata"]
+            for row in tool_list_drawers(wing="w", room="r")["drawers"]
+        }
+        assert len(listed) == 2
+        metas = list(listed.values())
+        assert any(m.get("source_file") == "s.md" for m in metas)
+        assert any(m.get("custom") == "yes" for m in metas)
+
+    def test_bulk_reports_duplicates_without_duplicating(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        items = [{"wing": "w", "room": "r", "content": "alpha"}]
+        first = tool_add_drawers(items=items)
+        second = tool_add_drawers(items=items)
+
+        assert first["added"] == 1
+        assert second["added"] == 0
+        assert second["already_exists"] == 1
+        assert second["rows_written"] == 0
+        assert tool_list_drawers(wing="w", room="r")["total"] == 1
+
+    def test_bulk_skips_an_invalid_item_and_writes_the_rest(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        result = tool_add_drawers(
+            items=[
+                {"room": "r", "content": "no wing here"},
+                {"wing": "w", "room": "r", "content": "good"},
+            ]
+        )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        assert result["failed"] == 1
+        assert tool_list_drawers(wing="w", room="r")["total"] == 1
+
+    def test_bulk_refuses_an_empty_item_list(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers
+
+        assert tool_add_drawers(items=[])["success"] is False
+        assert tool_add_drawers(items=None)["success"] is False
+
+    def test_registered_and_dispatchable(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import handle_request
+
+        listed = handle_request({"method": "tools/list", "id": 1, "params": {}})
+        names = {t["name"] for t in listed["result"]["tools"]}
+        assert "mempalace_add_drawers" in names
+
+
 # ── KG Tools ────────────────────────────────────────────────────────────
