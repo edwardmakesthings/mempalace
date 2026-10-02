@@ -21,6 +21,7 @@ Tools (read):
   mempalace_get_taxonomy    — full wing → room → count tree
   mempalace_search          — semantic search, optional wing/room/source_file filter
   mempalace_check_duplicate — check if content already exists before filing
+  mempalace_kg_query_many   — query the graph for many entities in one call
 
 Tools (write):
   mempalace_add_drawer      — file verbatim content into a wing/room
