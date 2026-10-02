@@ -34,6 +34,7 @@ TOOL_CAPABILITIES = {
     "mempalace_get_taxonomy": ("read", ""),
     "mempalace_get_aaak_spec": ("read", "lock_free"),
     "mempalace_kg_query": ("read", "lock_free"),
+    "mempalace_kg_query_many": ("read", "lock_free"),
     "mempalace_kg_add": ("write", "mutating peer_exempt lock_free"),
     "mempalace_kg_invalidate": ("write", "mutating peer_exempt lock_free"),
     "mempalace_kg_supersede": ("write", "mutating peer_exempt lock_free"),
