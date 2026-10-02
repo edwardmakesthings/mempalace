@@ -130,6 +130,19 @@ File verbatim content into the palace. Identical content (same deterministic dra
 
 ---
 
+### `mempalace_add_drawers`
+
+File many drawers in one call, with full metadata control. One idempotency probe and batched upserts instead of a round trip per drawer. An invalid item is reported in `results` and the rest of the batch is still filed; identical content is reported as `already_exists`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `items` | array of objects | **Yes** | Each `{ wing, room, content }` plus optional `source_file` and `metadata` |
+| `added_by` | string | No | Who is filing (default: "mcp") |
+
+**Returns:** `{ success, added, already_exists, failed, rows_written, results }`. Each result is `{ index, success, drawer_id, chunks }`, `{ index, success, reason: "already_exists", drawer_id }`, or `{ index, success: false, error }`.
+
+---
+
 ### `mempalace_checkpoint`
 
 Save a whole session in one call. Semantic-dedups each item, files the non-duplicates as drawers, then writes one diary entry. Use this instead of many separate `mempalace_check_duplicate` / `mempalace_add_drawer` / `mempalace_diary_write` calls — it renders as a single tool-call card in the host UI (and keeps the spinner up for the whole save). Reuses the same single-item handlers, so dedup, idempotency, and verbatim guarantees are identical.
@@ -313,6 +326,23 @@ Query entity relationships with time filtering. Defaults to one-hop; set `recurs
 **Returns:** `{ entity, as_of, facts: [{ direction, subject, predicate, object, valid_from, valid_to, current }], count }`
 
 With `recurse=true`, each fact also carries `depth` (the hop at which the walk reached it), the result adds `visited_nodes`, and a walk that reaches 5,000 facts stops there and returns `truncated: true` with `max_facts`. Narrow it with `predicate` or a smaller `max_depth`.
+
+---
+
+### `mempalace_kg_query_many`
+
+Query the knowledge graph for several entities in one call. Same filters as `mempalace_kg_query`. An entity that cannot be queried is reported under `errors` and the rest still return.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `entities` | array of strings | **Yes** | Entities to query |
+| `as_of` | string | No | Only facts valid at this time |
+| `direction` | string | No | `outgoing`, `incoming`, or `both` (default: `both`) |
+| `predicate` | string | No | Predicate filter |
+| `recurse` | boolean | No | Continue past one hop (default: false) |
+| `max_depth` | integer | No | Maximum traversal depth when `recurse=true` (default: 20) |
+
+**Returns:** `{ success, count, results: { <entity>: <kg_query payload> }, errors: { <entity>: <message> } }`
 
 ---
 
