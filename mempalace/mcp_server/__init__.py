@@ -20,9 +20,11 @@ Tools (read):
   mempalace_get_taxonomy    — full wing → room → count tree
   mempalace_search          — semantic search, optional wing/room/source_file filter
   mempalace_check_duplicate — check if content already exists before filing
+  mempalace_kg_query_many   — query the graph for many entities in one call
 
 Tools (write):
   mempalace_add_drawer      — file verbatim content into a wing/room
+  mempalace_add_drawers     — bulk-file many drawers with full metadata
   mempalace_delete_drawer   — remove a drawer by ID
   mempalace_delete_drawers  — remove many drawers by ID in one call (bulk)
   mempalace_delete_by_source — bulk-remove all drawers mined from one source_file

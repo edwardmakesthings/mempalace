@@ -2188,4 +2188,197 @@ class TestDeletePurgesRevisions:
         assert self._revised_ids(palace_path) == {"drawer_proj_backend_aaa"}
 
 
+class TestAddDrawers:
+    """tool_add_drawers — bulk filing with full metadata control."""
+
+    def _patch(self, monkeypatch, config, kg):
+        _patch_mcp_server(monkeypatch, config, kg)
+
+    def test_bulk_files_every_item_and_chunks_oversized_content(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        # Comfortably above any default chunk_size, so this item must chunk.
+        oversized = "x" * 2500
+        result = tool_add_drawers(
+            items=[
+                {"wing": "w", "room": "r", "content": "alpha", "source_file": "s.md"},
+                {"wing": "w", "room": "r", "content": "beta", "metadata": {"custom": "yes"}},
+                {"wing": "w", "room": "r", "content": oversized},
+            ]
+        )
+
+        assert result["success"] is True
+        assert result["added"] == 3
+        assert result["failed"] == 0
+        # The two small items take one row each; the oversized one spans several.
+        assert result["rows_written"] >= 4
+        # Three logical drawers, however many rows they occupy.
+        assert tool_list_drawers(wing="w", room="r")["total"] == 3
+
+    def test_bulk_carries_source_file_and_extra_metadata(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        tool_add_drawers(
+            items=[
+                {"wing": "w", "room": "r", "content": "alpha", "source_file": "s.md"},
+                {"wing": "w", "room": "r", "content": "beta", "metadata": {"custom": "yes"}},
+            ]
+        )
+
+        listed = {
+            row["drawer_id"]: row["metadata"]
+            for row in tool_list_drawers(wing="w", room="r")["drawers"]
+        }
+        assert len(listed) == 2
+        metas = list(listed.values())
+        assert any(m.get("source_file") == "s.md" for m in metas)
+        assert any(m.get("custom") == "yes" for m in metas)
+
+    def test_bulk_reports_duplicates_without_duplicating(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        items = [{"wing": "w", "room": "r", "content": "alpha"}]
+        first = tool_add_drawers(items=items)
+        second = tool_add_drawers(items=items)
+
+        assert first["added"] == 1
+        assert second["added"] == 0
+        assert second["already_exists"] == 1
+        assert second["rows_written"] == 0
+        assert tool_list_drawers(wing="w", room="r")["total"] == 1
+
+    def test_bulk_skips_an_invalid_item_and_writes_the_rest(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_list_drawers
+
+        result = tool_add_drawers(
+            items=[
+                {"room": "r", "content": "no wing here"},
+                {"wing": "w", "room": "r", "content": "good"},
+            ]
+        )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        assert result["failed"] == 1
+        assert tool_list_drawers(wing="w", room="r")["total"] == 1
+
+    def test_bulk_refuses_an_empty_item_list(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers
+
+        assert tool_add_drawers(items=[])["success"] is False
+        assert tool_add_drawers(items=None)["success"] is False
+
+    def test_registered_and_dispatchable(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import handle_request
+
+        listed = handle_request({"method": "tools/list", "id": 1, "params": {}})
+        names = {t["name"] for t in listed["result"]["tools"]}
+        assert "mempalace_add_drawers" in names
+
+    def test_oversized_replay_and_same_call_duplicates_are_idempotent(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers
+
+        item = {"wing": "w", "room": "r", "content": "x" * 2500}
+        first = tool_add_drawers(items=[item, item])
+        assert (first["added"], first["already_exists"], first["failed"]) == (1, 1, 0)
+        second = tool_add_drawers(items=[item])
+        assert (second["added"], second["already_exists"], second["rows_written"]) == (0, 1, 0)
+
+    def test_extra_metadata_cannot_forge_bookkeeping_or_source_identity(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_add_drawers, tool_get_drawer
+
+        result = tool_add_drawers(
+            items=[
+                {
+                    "wing": "w",
+                    "room": "r",
+                    "content": "ordinary memory",
+                    "source_file": "actual.md",
+                    "metadata": {
+                        "custom": "kept",
+                        "parent_drawer_id": "forged",
+                        "is_sentinel": True,
+                        "source_file": "forged.md",
+                        "source_dir_ino": "forged",
+                        "retrieval_count": 999,
+                        "filed_at": "1900-01-01",
+                    },
+                }
+            ]
+        )
+        assert result["added"] == 1
+        meta = tool_get_drawer(result["results"][0]["drawer_id"])["metadata"]
+        assert meta["custom"] == "kept"
+        assert meta["source_file"] == "actual.md"
+        assert meta["filed_at"] != "1900-01-01"
+        for key in ("parent_drawer_id", "is_sentinel", "retrieval_count"):
+            assert key not in meta
+        assert meta.get("source_dir_ino") != "forged"
+
+    def test_partial_oversized_write_can_be_retried(self, monkeypatch, config, palace_path, kg):
+        self._patch(monkeypatch, config, kg)
+        from mempalace import mcp_server
+
+        monkeypatch.setattr(mcp_server, "_BULK_DRAWER_BATCH", 2)
+        col = mcp_server._get_collection(create=True)
+        real_upsert = col.upsert
+        calls = 0
+
+        def fail_second_slice(**kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("injected slice failure")
+            return real_upsert(**kwargs)
+
+        monkeypatch.setattr(mcp_server, "_get_collection", lambda **kwargs: col)
+        monkeypatch.setattr(col, "upsert", fail_second_slice)
+        item = {"wing": "w", "room": "r", "content": "z" * (config.chunk_size * 5)}
+        partial = mcp_server.tool_add_drawers(items=[item])
+        assert partial["success"] is False
+        assert partial["partial_write"] is True
+        assert (partial["added"], partial["failed"], partial["rows_written"]) == (0, 1, 2)
+        monkeypatch.setattr(col, "upsert", real_upsert)
+        retried = mcp_server.tool_add_drawers(items=[item])
+        assert (retried["added"], retried["failed"]) == (1, 0)
+        assert (
+            mcp_server.tool_get_drawer(retried["results"][0]["drawer_id"])["content"]
+            == item["content"]
+        )
+
+    def test_acknowledged_but_unreadable_write_is_not_reported_as_success(
+        self, monkeypatch, config, palace_path, kg
+    ):
+        self._patch(monkeypatch, config, kg)
+        from mempalace import mcp_server
+
+        col = mcp_server._get_collection(create=True)
+        monkeypatch.setattr(mcp_server, "_get_collection", lambda **kwargs: col)
+        monkeypatch.setattr(col, "upsert", lambda **kwargs: None)
+        result = mcp_server.tool_add_drawers(items=[{"wing": "w", "room": "r", "content": "lost"}])
+        assert result["success"] is False
+        assert (result["added"], result["failed"], result["rows_written"]) == (0, 1, 0)
+        assert "not readable" in result["error"]
+
+
 # ── KG Tools ────────────────────────────────────────────────────────────

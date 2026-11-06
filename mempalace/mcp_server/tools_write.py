@@ -771,6 +771,280 @@ def _delete_resolved_drawer(col, drawer_id: str, *, bulk: bool = False):
     return _delete_record(col, drawer_id, record, bulk=bulk)
 
 
+# Metadata the write path owns. A caller's ``metadata`` must not be able to
+# overwrite it: a forged ``parent_drawer_id`` would make an ordinary drawer look
+# like a chunk and corrupt the logical drawer counts, a forged date would break
+# date filtering and ranking, a forged ``source_encoding`` would make
+# ``get_drawer`` claim source bytes the source never held, and a forged
+# ``source_dir_ino`` or mine stamp would change what ``sync`` and the miners
+# decide about the drawer.
+_DRAWER_META_RESERVED_KEYS = frozenset(
+    {
+        "wing",
+        "room",
+        "source_file",
+        "source_dir_ino",
+        "source_mtime",
+        "source_encoding",
+        "transforms",
+        "added_by",
+        "filed_at",
+        "last_modified",
+        "authored_at",
+        "content_date",
+        "content_date_source",
+        "id_recipe",
+        "normalize_version",
+        "ingest_mode",
+        "is_sentinel",
+        "extract_mode",
+        "retrieval_count",
+        "last_retrieved",
+        "chunk_index",
+        "chunk_total",
+        "chunk_ids",
+        "parent_drawer_id",
+        "parent_entry_id",
+    }
+)
+
+
+def _normalize_extra_metadata(extra_meta):
+    """Return scalar-only caller metadata safe for storage, minus reserved keys."""
+    if extra_meta is None:
+        return {}
+    if not isinstance(extra_meta, dict):
+        raise ValueError("metadata must be an object")
+
+    normalized = {}
+    for key, value in extra_meta.items():
+        if not isinstance(key, str):
+            continue
+        key = strip_lone_surrogates(key).strip()
+        if not key or key in _DRAWER_META_RESERVED_KEYS or value is None:
+            continue
+        if isinstance(value, (bool, int, float)):
+            normalized[key] = value
+        else:
+            normalized[key] = strip_lone_surrogates(str(value))
+    return normalized
+
+
+def _bulk_drawer_result(
+    results: list, rows_written: int, planned: bool, failure: dict = None
+) -> dict:
+    """Report ordered item results and confirmed physical writes."""
+    for index, slot in enumerate(results):
+        if slot is None:
+            results[index] = {"index": index, "success": False, "error": failure["error"]}
+    existing_count = sum(1 for row in results if row.get("reason") == "already_exists")
+    failed = sum(1 for row in results if not row["success"])
+    summary = {
+        "added": len(results) - existing_count - failed,
+        "already_exists": existing_count,
+        "failed": failed,
+        "rows_written": rows_written,
+    }
+    if failure is not None:
+        outcome = {**failure, **summary, "partial_write": rows_written > 0}
+    else:
+        outcome = {"success": True, **summary}
+    outcome["results"] = results
+    if planned:
+        _wal_result("add_drawers", outcome)
+    return outcome
+
+
+def tool_add_drawers(items: list = None, added_by: str = "mcp"):
+    """File many drawers in one call, with full metadata control.
+
+    The bulk counterpart to ``add_drawer``. ``checkpoint`` already takes a list,
+    but it is coupled to a diary write and cannot set ``source_file`` or any
+    extra metadata, so anything carrying provenance had to loop ``add_drawer``,
+    one round trip per drawer, each contending for the palace lock.
+
+    Each item is ``{"wing", "room", "content"}`` plus optional ``"source_file"``
+    and ``"metadata"`` (scalars merged into the row; keys the write path owns
+    are ignored). A bad item is reported in its slot and skipped. An item whose
+    id is already stored, or that repeats an earlier item in this call, reports
+    ``already_exists``. ``results`` has one slot per input item, in input order.
+
+    One idempotency read covers the whole call, then rows are upserted in slices
+    of ``_BULK_DRAWER_BATCH``, each read back before it counts. ``added`` counts
+    drawers and ``rows_written`` counts confirmed rows, so an oversized item is
+    one added drawer spanning several rows.
+
+    The call is not atomic. A failed slice stops the call and returns
+    ``success: False`` with ``partial_write`` saying whether earlier slices
+    landed: items wholly inside them keep their success slots, and every other
+    item gets an error slot. Re-sending the same items is safe, because an
+    interrupted oversized item has no last chunk yet and is rewritten over the
+    same ids.
+    """
+    if not isinstance(items, list) or not items:
+        return {"success": False, "error": "items must be a non-empty list"}
+    if not isinstance(added_by, str):
+        return {"success": False, "error": "added_by must be a string"}
+    added_by = strip_lone_surrogates(added_by)
+
+    chunk_size = _config.chunk_size
+    filed_at = utc_now_iso()
+
+    results: list = [None] * len(items)
+    planned: list[tuple] = []
+    for index, raw in enumerate(items):
+        try:
+            if not isinstance(raw, dict):
+                raise ValueError("item must be an object")
+            wing = canonical_wing(raw.get("wing"), "wing")
+            room = sanitize_name(raw.get("room"), "room")
+            content = sanitize_content(raw.get("content"))
+            source_file = raw.get("source_file") or ""
+            if not isinstance(source_file, str):
+                raise ValueError("source_file must be a string")
+            source_file = strip_lone_surrogates(source_file)
+            base_meta = _normalize_extra_metadata(raw.get("metadata"))
+            # Same identity stamp add_drawer records, so sync can protect these too.
+            if source_file:
+                base_meta.update(identity_metadata(source_file))
+        except ValueError as e:
+            results[index] = {"index": index, "success": False, "error": str(e)}
+            continue
+        base_meta.update(
+            wing=wing,
+            room=room,
+            source_file=source_file,
+            added_by=added_by,
+            filed_at=filed_at,
+            last_modified=filed_at,
+            id_recipe=ID_RECIPE,
+        )
+        drawer_id = make_drawer_id_from_content(wing, room, content)
+        # Oversized content also probes its last chunk: the id add_drawer's
+        # chunked path leaves behind, alongside a legacy single row at the root.
+        probes = [drawer_id]
+        if len(content) > chunk_size:
+            probes.append(f"{drawer_id}_chunk_{(len(content) - 1) // chunk_size:06d}")
+        planned.append((index, drawer_id, content, base_meta, probes))
+
+    def finish(rows_written: int, failure: dict = None) -> dict:
+        return _bulk_drawer_result(results, rows_written, bool(planned), failure)
+
+    if not planned:
+        return finish(0)
+
+    col = _get_collection(create=True)
+    if not col:
+        return _collection_error_or_no_palace()
+
+    _wal_log(
+        "add_drawers",
+        {
+            "added_by": added_by,
+            "drawers": [
+                {
+                    "drawer_id": drawer_id,
+                    "wing": base_meta["wing"],
+                    "room": base_meta["room"],
+                    "content_length": len(content),
+                }
+                for _, drawer_id, content, base_meta, _ in planned
+            ],
+        },
+    )
+
+    # Backends refuse a repeated id, so each read and write names an id once.
+    probe_ids = list(dict.fromkeys(probe for *_, probes in planned for probe in probes))
+    try:
+        existing = set(_get_result_ids(col.get(ids=probe_ids, include=[])))
+    except Exception as e:
+        logger.warning("Idempotency pre-check failed for add_drawers", exc_info=True)
+        return finish(0, {"success": False, "error": f"Idempotency check failed before write: {e}"})
+
+    row_ids: list[str] = []
+    row_docs: list[str] = []
+    row_metas: list[dict] = []
+    written: dict[str, tuple] = {}  # drawer_id -> (index, end row, row count)
+    repeats: list[tuple] = []
+    for index, drawer_id, content, base_meta, probes in planned:
+        if existing.intersection(probes):
+            results[index] = {
+                "index": index,
+                "success": True,
+                "reason": "already_exists",
+                "drawer_id": drawer_id,
+            }
+        elif drawer_id in written:
+            # Settled below: it only exists if the first occurrence lands.
+            repeats.append((index, drawer_id))
+        else:
+            if len(content) <= chunk_size:
+                ids, docs, metas = [drawer_id], [content], [{**base_meta, "chunk_index": 0}]
+            else:
+                ids, docs, metas = _build_chunk_rows(drawer_id, content, base_meta, chunk_size)
+            row_ids.extend(ids)
+            row_docs.extend(docs)
+            row_metas.extend(metas)
+            written[drawer_id] = (index, len(row_ids), len(ids))
+
+    if not row_ids:
+        return finish(0)
+
+    confirmed_rows = 0
+    failure = None
+    try:
+        # A root id was just probed absent, so only chunk rows can hit a stored row.
+        assert_no_collisions(
+            [
+                (row_id, meta)
+                for row_id, meta in zip(row_ids, row_metas)
+                if "parent_drawer_id" in meta
+            ],
+            col,
+        )
+        for start in range(0, len(row_ids), _BULK_DRAWER_BATCH):
+            batch_ids = row_ids[start : start + _BULK_DRAWER_BATCH]
+            col.upsert(
+                ids=batch_ids,
+                documents=row_docs[start : start + _BULK_DRAWER_BATCH],
+                metadatas=row_metas[start : start + _BULK_DRAWER_BATCH],
+            )
+            readable = set(_get_result_ids(col.get(ids=batch_ids, include=[])))
+            if not readable.issuperset(batch_ids):
+                raise RuntimeError(
+                    "Drawer write was acknowledged but a new ID is not readable. "
+                    "The palace index may be stale; run reconnect or repair."
+                )
+            confirmed_rows += len(batch_ids)
+    except Exception as e:
+        logger.warning("add_drawers stopped after %d row(s)", confirmed_rows, exc_info=True)
+        failure = _embed_failure(e, success=False)
+    finally:
+        _invalidate_overview_caches()
+
+    landed = set()
+    for drawer_id, (index, end_row, chunks) in written.items():
+        if end_row <= confirmed_rows:
+            landed.add(drawer_id)
+            results[index] = {
+                "index": index,
+                "success": True,
+                "drawer_id": drawer_id,
+                "chunks": chunks,
+            }
+    for index, drawer_id in repeats:
+        if drawer_id in landed:
+            results[index] = {
+                "index": index,
+                "success": True,
+                "reason": "already_exists",
+                "drawer_id": drawer_id,
+            }
+
+    logger.info("Filed %d drawer(s) as %d row(s)", len(landed), confirmed_rows)
+    return finish(confirmed_rows, failure)
+
+
 def tool_delete_drawer(drawer_id: str):
     """Delete one drawer by ID.
 
@@ -1344,6 +1618,8 @@ def tool_get_drawer(drawer_id: str, include_source_bytes: bool = False):
 # or a list past the cap is rejected with {"error": ...} before any read or
 # write, so that rejection is a different shape from a batch that ran.
 _BULK_DRAWER_MAX_IDS = 500
+# Rows per ``col.upsert`` in add_drawers: one write per slice, never per drawer.
+_BULK_DRAWER_BATCH = 500
 
 
 def _bulk_ids_error(drawer_ids, *, action: str):
@@ -1732,6 +2008,7 @@ def tool_move_drawers(drawer_ids: list, target_wing: str = None, target_room: st
 
     return {"results": results, "count": len(results), "moved": moved, "errors": errors}
 
+
 def _coerce_non_negative_int(value, default: int = 0) -> int:
     try:
         parsed = int(value)
@@ -1743,54 +2020,6 @@ def _coerce_non_negative_int(value, default: int = 0) -> int:
 # Fields the write path owns, which caller-supplied extra metadata cannot
 # overwrite: a forged parent id would make an ordinary drawer look like a chunk,
 # and a forged source_encoding would misstate the drawer's source bytes.
-_DRAWER_META_RESERVED_KEYS = frozenset(
-    {
-        "wing",
-        "room",
-        "source_file",
-        "source_encoding",
-        "added_by",
-        "filed_at",
-        "last_modified",
-        "id_recipe",
-        "retrieval_count",
-        "last_retrieved",
-        "chunk_index",
-        "chunk_total",
-        "chunk_ids",
-        "parent_drawer_id",
-        "parent_entry_id",
-        "ingest_mode",
-        "is_sentinel",
-    }
-)
-
-
-def _normalize_extra_metadata(extra_meta):
-    """Return scalar-only metadata safe for Chroma storage."""
-    if extra_meta is None:
-        return {}
-    if not isinstance(extra_meta, dict):
-        raise ValueError("extra metadata must be an object")
-
-    normalized = {}
-    for key, value in extra_meta.items():
-        if not isinstance(key, str):
-            continue
-        key = strip_lone_surrogates(key).strip()
-        if not key or key in _DRAWER_META_RESERVED_KEYS:
-            continue
-        if value is None:
-            continue
-        if isinstance(value, (bool, int, float)):
-            normalized[key] = value
-            continue
-        if isinstance(value, str):
-            normalized[key] = strip_lone_surrogates(value)
-            continue
-        normalized[key] = strip_lone_surrogates(str(value))
-
-    return normalized
 
 
 def _record_drawer_reads(logical_ids) -> None:

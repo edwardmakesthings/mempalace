@@ -35,4 +35,4 @@ def test_schema_reduction_benchmark():
     # Completeness of structured fields costs some of the original >80% headline.
     assert reduction_pct > 70.0
     assert len(LIGHT_TOOLS) == 3
-    assert len(LEGACY_TOOLS) == 47
+    assert len(LEGACY_TOOLS) == 55

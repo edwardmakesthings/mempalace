@@ -70,6 +70,41 @@ TOOLS = {
         },
         "handler": tool_kg_query,
     },
+    "mempalace_kg_query_many": {
+        "description": "Query the knowledge graph for several entities in one call. Same filters as kg_query; results are keyed by entity, with unusable names reported under errors rather than failing the batch.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Entities to query (e.g. ['Max', 'MyProject'])",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "Date/datetime filter — only facts valid at this time (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ, optional)",
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "outgoing (entity→?), incoming (?→entity), or both (default: both)",
+                },
+                "predicate": {
+                    "type": "string",
+                    "description": "Optional predicate filter (e.g. 'synthesized-from', 'merged-into').",
+                },
+                "recurse": {
+                    "type": "boolean",
+                    "description": "When true, breadth-first traversal continues beyond one hop (default: false).",
+                },
+                "max_depth": {
+                    "type": "integer",
+                    "description": "Maximum traversal depth when recurse=true (default 20).",
+                },
+            },
+            "required": ["entities"],
+        },
+        "handler": tool_kg_query_many,
+    },
     "mempalace_kg_add": {
         "description": "Add a fact to the knowledge graph. Subject → predicate → object with optional time window. E.g. ('Max', 'started_school', 'Year 7', valid_from='2026-09-01'). Pass valid_to to backfill an already-ended historical fact in a single call.",
         "input_schema": {
@@ -518,6 +553,35 @@ TOOLS = {
             "required": ["wing", "room", "content"],
         },
         "handler": tool_add_drawer,
+    },
+    "mempalace_add_drawers": {
+        "description": "File many drawers in one call, with full metadata control. Use instead of looping add_drawer: one idempotency probe and batched upserts rather than a round trip per drawer, each contending for the palace lock.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "description": "Items to file. Each is {wing, room, content} plus optional source_file and metadata.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "wing": {"type": "string"},
+                            "room": {"type": "string"},
+                            "content": {"type": "string"},
+                            "source_file": {"type": "string"},
+                            "metadata": {"type": "object"},
+                        },
+                        "required": ["wing", "room", "content"],
+                    },
+                },
+                "added_by": {
+                    "type": "string",
+                    "description": "Who is filing these (default: mcp)",
+                },
+            },
+            "required": ["items"],
+        },
+        "handler": tool_add_drawers,
     },
     "mempalace_checkpoint": {
         "description": "Save a whole session in one call: semantic-dedups each item, files non-duplicates as drawers, then writes one diary entry. Use this instead of many separate check_duplicate/add_drawer/diary_write calls — it renders as a single tool-call card in the host UI.",
